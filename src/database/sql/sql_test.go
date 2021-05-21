@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func init() {
@@ -4360,6 +4361,17 @@ func TestTypedString(t *testing.T) {
 	expected := Str("Alice")
 	if scanned != expected {
 		t.Errorf("expected %+v, got %+v", expected, scanned)
+	}
+}
+
+// In order to use atomic.AddUint64, certain fields of the DB
+// type must be 8-bit aligned.
+func TestCountersAligned(t *testing.T) {
+	if offset := unsafe.Offsetof(DB{}.preparedStatementsCount); offset%8 != 0 {
+		t.Fatalf("Atomic64 field 'preparedStatementsCount' has an offest of %d, not aligned to 8", offset)
+	}
+	if offset := unsafe.Offsetof(DB{}.preparedStatementsClosed); offset%8 != 0 {
+		t.Fatalf("Atomic64 field 'preparedStatementsClosed' has an offest of %d, not aligned to 8", offset)
 	}
 }
 

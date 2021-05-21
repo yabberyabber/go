@@ -474,19 +474,21 @@ type DB struct {
 	// maybeOpenNewConnections sends on the chan (one send per needed connection)
 	// It is closed during db.Close(). The close tells the connectionOpener
 	// goroutine to exit.
-	openerCh          chan struct{}
-	closed            bool
-	dep               map[finalCloser]depSet
-	lastPut           map[*driverConn]string // stacktrace of last conn's put; debug only
-	maxIdleCount      int                    // zero means defaultMaxIdleConns; negative means 0
-	maxOpen           int                    // <= 0 means unlimited
-	maxLifetime       time.Duration          // maximum amount of time a connection may be reused
-	maxIdleTime       time.Duration          // maximum amount of time a connection may be idle before being closed
-	cleanerCh         chan struct{}
-	waitCount         int64 // Total number of connections waited for.
-	maxIdleClosed     int64 // Total number of connections closed due to idle count.
-	maxIdleTimeClosed int64 // Total number of connections closed due to idle time.
-	maxLifetimeClosed int64 // Total number of connections closed due to max connection lifetime limit.
+	openerCh                 chan struct{}
+	closed                   bool
+	dep                      map[finalCloser]depSet
+	lastPut                  map[*driverConn]string // stacktrace of last conn's put; debug only
+	maxIdleCount             int                    // zero means defaultMaxIdleConns; negative means 0
+	maxOpen                  int                    // <= 0 means unlimited
+	maxLifetime              time.Duration          // maximum amount of time a connection may be reused
+	maxIdleTime              time.Duration          // maximum amount of time a connection may be idle before being closed
+	cleanerCh                chan struct{}
+	waitCount                int64  // Total number of connections waited for.
+	maxIdleClosed            int64  // Total number of connections closed due to idle count.
+	maxIdleTimeClosed        int64  // Total number of connections closed due to idle time.
+	maxLifetimeClosed        int64  // Total number of connections closed due to max connection lifetime limit.
+	preparedStatementsCount  uint64 // Total number of prepared statements which have been opened.
+	preparedStatementsClosed uint64 // Total number of prepared statements which have been closed.
 
 	stop func() // stop cancels the connection opener.
 }
@@ -530,6 +532,8 @@ func (dc *driverConn) releaseConn(err error) {
 }
 
 func (dc *driverConn) removeOpenStmt(ds *driverStmt) {
+	atomic.AddUint64(&dc.db.preparedStatementsClosed, 1)
+
 	dc.Lock()
 	defer dc.Unlock()
 	delete(dc.openStmt, ds)
@@ -594,6 +598,9 @@ func (dc *driverConn) prepareLocked(ctx context.Context, cg stmtConnGrabber, que
 		dc.openStmt = make(map[*driverStmt]bool)
 	}
 	dc.openStmt[ds] = true
+
+	atomic.AddUint64(&dc.db.preparedStatementsCount, 1)
+
 	return ds, nil
 }
 
@@ -646,6 +653,7 @@ func (dc *driverConn) finalClose() error {
 		err = dc.ci.Close()
 		dc.ci = nil
 	})
+	atomic.AddUint64(&dc.db.preparedStatementsClosed, uint64(len(openStmt)))
 
 	dc.db.mu.Lock()
 	dc.db.numOpen--
@@ -1139,11 +1147,13 @@ type DBStats struct {
 	Idle            int // The number of idle connections.
 
 	// Counters
-	WaitCount         int64         // The total number of connections waited for.
-	WaitDuration      time.Duration // The total time blocked waiting for a new connection.
-	MaxIdleClosed     int64         // The total number of connections closed due to SetMaxIdleConns.
-	MaxIdleTimeClosed int64         // The total number of connections closed due to SetConnMaxIdleTime.
-	MaxLifetimeClosed int64         // The total number of connections closed due to SetConnMaxLifetime.
+	WaitCount                int64         // The total number of connections waited for.
+	WaitDuration             time.Duration // The total time blocked waiting for a new connection.
+	MaxIdleClosed            int64         // The total number of connections closed due to SetMaxIdleConns.
+	MaxIdleTimeClosed        int64         // The total number of connections closed due to SetConnMaxIdleTime.
+	MaxLifetimeClosed        int64         // The total number of connections closed due to SetConnMaxLifetime.
+	PreparedStatementsCount  uint64
+	PreparedStatementsClosed uint64
 }
 
 // Stats returns database statistics.
@@ -1160,11 +1170,13 @@ func (db *DB) Stats() DBStats {
 		OpenConnections: db.numOpen,
 		InUse:           db.numOpen - len(db.freeConn),
 
-		WaitCount:         db.waitCount,
-		WaitDuration:      time.Duration(wait),
-		MaxIdleClosed:     db.maxIdleClosed,
-		MaxIdleTimeClosed: db.maxIdleTimeClosed,
-		MaxLifetimeClosed: db.maxLifetimeClosed,
+		WaitCount:                db.waitCount,
+		WaitDuration:             time.Duration(wait),
+		MaxIdleClosed:            db.maxIdleClosed,
+		MaxIdleTimeClosed:        db.maxIdleTimeClosed,
+		MaxLifetimeClosed:        db.maxLifetimeClosed,
+		PreparedStatementsCount:  db.preparedStatementsCount,
+		PreparedStatementsClosed: db.preparedStatementsClosed,
 	}
 	return stats
 }
